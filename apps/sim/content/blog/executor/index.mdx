@@ -1,7 +1,7 @@
 ---
 slug: executor
-title: 'Inside the Sim Executor -- Orchestration, Flexibility, and Performance'
-description: 'A technical deep-dive into Sim''s workflow executor: how we built a DAG-based execution engine with native parallel processing, intelligent edge routing, and stateful pause/resume capabilities'
+title: 'Inside the Sim Executor - DAG Based Execution with Native Parallelism'
+description: 'How we built a DAG-based execution engine with native parallel processing, intelligent edge routing, and stateful pause/resume capabilities'
 date: 2025-11-08
 updated: 2025-11-12
 authors:
@@ -23,12 +23,12 @@ We designed the Sim executor to make these patterns feel natural. This post shar
 
 ## Laying the Foundation
 
-There's a single guiding philosophy we use when designing the executor: workflows should read like the work you intend to do, not like the mess of cables behind the TV.
-The complexity of wiring and plumbing should be abstracted away from the user, and building a performant workflow end to end should be easy, modular, and seamless.
+There's a single guiding philosophy we use when designing the executor: workflows should read like the work you intend to do, not like the mess of cables behind a TV.
+The complexity of wiring and plumbing should be abstracted away, and building a performant workflow end to end should be easy, modular, and seamless.
 
 That's why the Sim executor serves as both an orchestrator and a translation layer, turning user-friendly workflow representations into an executable DAG behind the scenes.
 
-## Core engine: DAGs and Queues
+## Core engine
 
 At its heart, the executor figures out which blocks can run, runs them, then repeats. It sounds simple in theory, but can become surprisingly complex when you factor in conditional routing, nested loops, and true parallelism.
 
@@ -38,13 +38,13 @@ Before execution starts, we compile the visual workflow into a directed acyclic 
 
 This upfront compilation pays off immediately: the entire topology is concrete before the first block ever executes.
 
-### The Execution Queue: Event-Driven Execution
+### The Execution Queue
 
 Once we have the DAG, execution becomes event‑driven. We maintain a ready queue: nodes whose dependencies are all satisfied. When a node completes, we remove its outgoing edges from downstream nodes' incoming edge sets. Any node that hits zero incoming edges goes straight into the queue. At it's core, topological sort.
 
 The key difference here from traditional workflow execution approaches: we don't wait for a "layer" to finish. If three nodes in the queue are independent, we launch all three immediately and let the runtime handle concurrency.
 
-### Dependency Resolution: Constant Time Variable Resolution
+### Dependency Resolution
 
 In our earlier prototypes, we scanned the connection array after every block execution to see what became ready. However, as the number of nodes and edges scale, performance takes a hit.
 
@@ -52,7 +52,7 @@ The DAG flips that model. Each node tracks its own incoming edges in a set. When
 
 This optimization compounds when you have many parallel branches or deeply nested structures. Every node knows its own readiness without asking the rest of the graph.
 
-### Variable Resolution: Scopes That Layer
+### Variable Resolution
 
 Blocks reference data from different sources: loop items (`<loop.iteration>`, `<loop.item>`), parallel branch indices (`<parallel.index>`), upstream block outputs (`<blockId.output.content>`), workflow variables (`<workflow.variableName>`), and environment variables (`${API_KEY}`). The resolver tries each scope in order—loop first, then parallel, then workflow, then environment, then block outputs. Inner scopes shadow outer ones, matching standard scoping semantics. This makes variables predictable: the context you're in determines what you see, without name collision or manual prefixes.
 
@@ -62,9 +62,9 @@ A workflow can have multiple entry points. Webhooks listen at different paths, s
 
 The DAG builder handles this through selective compilation. When a workflow executes, we receive a trigger block ID. The builder starts from that node and builds only the reachable subgraph. Blocks that aren't downstream from the trigger never make it into the DAG.
 
-This keeps execution focused. A workflow with five different webhook triggers doesn't compile all five paths every time=. The topology adapts to the context automatically.
+This keeps execution focused. A workflow with five different webhook triggers doesn't compile all five paths every time. The topology adapts to the context automatically.
 
-### Executing from the Client: Seeing Execution as it Happens
+### Executing from the Client
 
 The executor lives server-side. Users build workflows in the client. As they iterate and test, they need to see block inputs and outputs, watch execution progress in real time, and understand which paths the workflow takes.
 
@@ -72,7 +72,7 @@ Polling adds latency. Duplicating execution logic client‑side creates drift. W
 
 The executor emits events at key execution points—block starts, completions, streaming content, errors. These events flow through SSE to connected clients. The client reconstructs execution state from the stream, rendering logs and outputs as blocks complete.
 
-## Parallelism: true concurrent execution
+## Parallelism
 
 When a workflow fans out to call multiple APIs, compare outputs from different models, or process items independently, those branches should run at the same time. Not interleaved, not sequentially—actually concurrent.
 
@@ -100,11 +100,14 @@ For repetitive parallel work, we added parallel subflows. Instead of duplicating
 
 Behind the scenes, this expands to the same branch‑indexed DAG structure. The executor doesn't distinguish between manually authored parallel branches and subflow-generated ones—they both become independent nodes that execute concurrently. Same execution model, cleaner authoring experience.
 
-## Loops: iteration that fits the work
+## Loops
 
 ### How loops compile to DAGs
 
 Loops present a challenge for DAGs: graphs are acyclic, but loops repeat. We handle this by expanding loops into sentinel nodes during compilation.
+
+![Loop sentinel nodes](/studio/executor/loop-sentinels.png)
+*Loops expand into sentinel start and end nodes. The backward edge only activates when the loop continues, preserving the DAG's acyclic property.*
 
 A loop is bookended by two nodes: a sentinel start and a sentinel end. The sentinel start activates the first blocks inside the loop. When terminal blocks complete, they route to the sentinel end. The sentinel end evaluates the loop condition and returns either "continue" (which routes back to the start) or "exit" (which activates blocks after the loop).
 
@@ -116,7 +119,7 @@ When a loop continues, the executor doesn't re-execute blocks from scratch. It c
 
 Blocks inside the loop access loop variables through the resolver chain. `<loop.iteration>` resolves before checking block outputs or workflow variables, so iteration context shadows outer scopes. This makes variable access predictable—you always get the current loop state.
 
-## Conditions and Routers: deterministic branching
+## Conditions and Routers
 
 Workflows branch based on runtime decisions. A condition block evaluates expressions and routes to different paths. A router block lets an AI model choose which path to take based on context. Both are core to building adaptive workflows.
 
@@ -132,6 +135,9 @@ This makes AI-driven routing deterministic and traceable. You can inspect the ex
 
 When a condition or router executes, it evaluates its logic and returns a single selection. The edge manager checks each outgoing edge to see if its label matches the selection. The matching edge activates; the rest deactivate.
 
+![Edge activation and pruning](/studio/executor/edge-pruning.png)
+*When a condition selects one path, the chosen edge activates while unselected paths deactivate recursively, preventing unreachable blocks from executing.*
+
 Deactivation cascades. If an edge deactivates, the executor recursively deactivates all edges downstream from its target—unless that target has other active incoming edges. This automatic pruning prevents unreachable blocks from ever entering the ready queue.
 
 The benefit: wasted work drops to zero. Paths that won't execute don't consume resources, don't wait in the queue, and don't clutter execution logs. The DAG reflects what actually ran, not what could have run.
@@ -144,7 +150,7 @@ When paths converge, the target block has multiple incoming edges—one from eac
 
 This works for complex topologies: nested conditions, routers feeding into other routers, parallel branches that reconverge after different amounts of work. The dependency tracking adapts automatically.
 
-## Human in the loop: pause and resume anywhere
+## Human in the loop
 
 AI workflows aren't fully automated. They pause for approvals, wait for human feedback, or stop to let someone review model output before continuing. These pauses can happen anywhere—mid‑branch, inside a loop, across multiple parallel paths at once.
 
@@ -174,11 +180,16 @@ The executor uses a queue lock to prevent race conditions. When a node completes
 
 The lock also prevents a resumed node from racing with other executing nodes. When a resume trigger fires, it enters the queue like any other node. The ready queue pattern handles coordination—resumed nodes execute when their dependencies clear, just like nodes in the original execution.
 
-### What this enables
+### Example
 
-A typical pattern: run an agent in a loop, pause after each iteration for human feedback, use a router to decide whether to continue or exit based on that feedback, update a workflow variable with approval status, and let the while loop condition check that variable.
+![Iterative agent refinement with human feedback](/studio/executor/hitl-loop.png)
+*A common pattern: agent generates output, pauses for human review, router decides pass/fail based on feedback, saves to workflow variable, and loop continues until approved.*
 
-The executor handles this without custom glue. The loop iterates, the approval block pauses, you provide feedback via a resume link, the router evaluates it, the workflow variable updates, and the loop condition checks the variable. Each piece composes cleanly because pause/resume integrates with loops, parallels, routing, and variables at the executor level.
+A while loop runs an agent with previous feedback as context. The agent's output goes to a human‑in‑the‑loop block, which pauses execution and sends a notification. The user reviews the output and provides feedback via the resume link.
+
+When resumed, the feedback flows to a router that evaluates whether the output passes or needs revision. If it fails, the router saves the feedback to a workflow variable and routes back to continue the loop. The agent receives this feedback on the next iteration and tries again. If it passes, the router exits the loop and continues downstream.
+
+The while loop's condition checks the workflow variable. As long as the status is "fail," the loop continues. When the router sets it to "pass," the loop exits. Each piece—loops, pause/resume, routing, variables—composes without glue because they're all first‑class executor concepts.
 
 Multiple reviewers approving different branches works the same way. Each branch pauses independently, reviewers approve in any order, and execution continues as each approval comes in. The parallel orchestrator collects the results when all branches complete.
 
