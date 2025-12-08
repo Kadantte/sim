@@ -117,8 +117,6 @@ async function analyzeHeap(filepath: string) {
   const { edges } = data
   const edgeFields = meta.edge_fields as string[]
   const edgeFieldCount = edgeFields.length
-  const edgeTypeIdx = edgeFields.indexOf('type')
-  const edgeNameIdx = edgeFields.indexOf('name_or_index')
   const edgeToNodeIdx = edgeFields.indexOf('to_node')
 
   // Map from node index (in nodes array) to retainer info
@@ -135,7 +133,6 @@ async function analyzeHeap(filepath: string) {
   }
 
   // Second pass: build retainer map from edges
-  let currentNodeIdx = 0
   let edgeIdx = 0
   for (let i = 0; i < nodes.length; i += nodeFieldCount) {
     const edgeCount = nodes[i + 4] || 0 // edge_count is usually at index 4
