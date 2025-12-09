@@ -1,15 +1,33 @@
+import { createLogger } from '@/lib/logs/console/logger'
+
+const logger = createLogger('ProviderUtils')
+
 /**
  * Provider-specific unique identifier extractors for webhook idempotency
  */
 
+/**
+ * Extracts the unique event_id from Slack Events API payloads.
+ * The event_id is globally unique and is the correct idempotency key for Slack.
+ * Slack retries send the same event_id, so using this prevents duplicate processing.
+ */
 function extractSlackIdentifier(body: any): string | null {
+  // Use event_id from Slack Events API - this is the only correct identifier
+  // Slack includes event_id in all event_callback type payloads
   if (body.event_id) {
+    logger.debug('Extracted Slack event_id for idempotency', {
+      event_id: body.event_id,
+      event_type: body.event?.type,
+    })
     return body.event_id
   }
 
-  if (body.event?.ts && body.team_id) {
-    return `${body.team_id}:${body.event.ts}`
-  }
+  // No event_id means this is not a standard event_callback payload
+  // Log warning as this will cause duplicate processing issues
+  logger.warn('No Slack event_id found for idempotency', {
+    bodyType: body.type,
+    bodyKeys: Object.keys(body || {}),
+  })
 
   return null
 }
