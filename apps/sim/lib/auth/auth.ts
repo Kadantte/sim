@@ -2,6 +2,7 @@ import { sso } from '@better-auth/sso'
 import { stripe } from '@better-auth/stripe'
 import { db } from '@sim/db'
 import * as schema from '@sim/db/schema'
+import { createLogger } from '@sim/logger'
 import { betterAuth } from 'better-auth'
 import { drizzleAdapter } from 'better-auth/adapters/drizzle'
 import { nextCookies } from 'better-auth/next-js'
@@ -49,7 +50,6 @@ import {
   isRegistrationDisabled,
 } from '@/lib/core/config/feature-flags'
 import { getBaseUrl } from '@/lib/core/utils/urls'
-import { createLogger } from '@/lib/logs/console/logger'
 import { sendEmail } from '@/lib/messaging/email/mailer'
 import { getFromEmailAddress } from '@/lib/messaging/email/utils'
 import { quickValidateEmail } from '@/lib/messaging/email/validation'
@@ -120,6 +120,35 @@ export const auth = betterAuth({
           })
 
           if (existing) {
+            let scopeToStore = account.scope
+
+            if (account.providerId === 'salesforce' && account.accessToken) {
+              try {
+                const response = await fetch(
+                  'https://login.salesforce.com/services/oauth2/userinfo',
+                  {
+                    headers: {
+                      Authorization: `Bearer ${account.accessToken}`,
+                    },
+                  }
+                )
+
+                if (response.ok) {
+                  const data = await response.json()
+
+                  if (data.profile) {
+                    const match = data.profile.match(/^(https:\/\/[^/]+)/)
+                    if (match && match[1] !== 'https://login.salesforce.com') {
+                      const instanceUrl = match[1]
+                      scopeToStore = `__sf_instance__:${instanceUrl} ${account.scope}`
+                    }
+                  }
+                }
+              } catch (error) {
+                logger.error('Failed to fetch Salesforce instance URL', { error })
+              }
+            }
+
             await db
               .update(schema.account)
               .set({
@@ -129,7 +158,7 @@ export const auth = betterAuth({
                 idToken: account.idToken,
                 accessTokenExpiresAt: account.accessTokenExpiresAt,
                 refreshTokenExpiresAt: account.refreshTokenExpiresAt,
-                scope: account.scope,
+                scope: scopeToStore,
                 updatedAt: new Date(),
               })
               .where(eq(schema.account.id, existing.id))
@@ -140,24 +169,45 @@ export const auth = betterAuth({
           return { data: account }
         },
         after: async (account) => {
-          // Salesforce doesn't return expires_in in its token response (unlike other OAuth providers).
-          // We set a default 2-hour expiration so token refresh logic works correctly.
-          if (account.providerId === 'salesforce' && !account.accessTokenExpiresAt) {
-            const twoHoursFromNow = new Date(Date.now() + 2 * 60 * 60 * 1000)
-            try {
-              await db
-                .update(schema.account)
-                .set({ accessTokenExpiresAt: twoHoursFromNow })
-                .where(eq(schema.account.id, account.id))
-              logger.info(
-                '[databaseHooks.account.create.after] Set default expiration for Salesforce token',
-                { accountId: account.id, expiresAt: twoHoursFromNow }
-              )
-            } catch (error) {
-              logger.error(
-                '[databaseHooks.account.create.after] Failed to set Salesforce token expiration',
-                { accountId: account.id, error }
-              )
+          if (account.providerId === 'salesforce') {
+            const updates: {
+              accessTokenExpiresAt?: Date
+              scope?: string
+            } = {}
+
+            if (!account.accessTokenExpiresAt) {
+              updates.accessTokenExpiresAt = new Date(Date.now() + 2 * 60 * 60 * 1000)
+            }
+
+            if (account.accessToken) {
+              try {
+                const response = await fetch(
+                  'https://login.salesforce.com/services/oauth2/userinfo',
+                  {
+                    headers: {
+                      Authorization: `Bearer ${account.accessToken}`,
+                    },
+                  }
+                )
+
+                if (response.ok) {
+                  const data = await response.json()
+
+                  if (data.profile) {
+                    const match = data.profile.match(/^(https:\/\/[^/]+)/)
+                    if (match && match[1] !== 'https://login.salesforce.com') {
+                      const instanceUrl = match[1]
+                      updates.scope = `__sf_instance__:${instanceUrl} ${account.scope}`
+                    }
+                  }
+                }
+              } catch (error) {
+                logger.error('Failed to fetch Salesforce instance URL', { error })
+              }
+            }
+
+            if (Object.keys(updates).length > 0) {
+              await db.update(schema.account).set(updates).where(eq(schema.account.id, account.id))
             }
           }
         },
@@ -212,7 +262,6 @@ export const auth = betterAuth({
         'github',
         'email-password',
         'confluence',
-        // 'supabase',
         'x',
         'notion',
         'microsoft',
@@ -581,6 +630,21 @@ export const auth = betterAuth({
         },
 
         {
+          providerId: 'vertex-ai',
+          clientId: env.GOOGLE_CLIENT_ID as string,
+          clientSecret: env.GOOGLE_CLIENT_SECRET as string,
+          discoveryUrl: 'https://accounts.google.com/.well-known/openid-configuration',
+          accessType: 'offline',
+          scopes: [
+            'https://www.googleapis.com/auth/userinfo.email',
+            'https://www.googleapis.com/auth/userinfo.profile',
+            'https://www.googleapis.com/auth/cloud-platform',
+          ],
+          prompt: 'consent',
+          redirectURI: `${getBaseUrl()}/api/auth/oauth2/callback/vertex-ai`,
+        },
+
+        {
           providerId: 'microsoft-teams',
           clientId: env.MICROSOFT_CLIENT_ID as string,
           clientSecret: env.MICROSOFT_CLIENT_SECRET as string,
@@ -914,8 +978,6 @@ export const auth = betterAuth({
           redirectURI: `${getBaseUrl()}/api/auth/oauth2/callback/salesforce`,
           getUserInfo: async (tokens) => {
             try {
-              logger.info('Fetching Salesforce user profile')
-
               const response = await fetch(
                 'https://login.salesforce.com/services/oauth2/userinfo',
                 {
@@ -949,56 +1011,6 @@ export const auth = betterAuth({
             }
           },
         },
-
-        // Supabase provider (unused)
-        // {
-        //   providerId: 'supabase',
-        //   clientId: env.SUPABASE_CLIENT_ID as string,
-        //   clientSecret: env.SUPABASE_CLIENT_SECRET as string,
-        //   authorizationUrl: 'https://api.supabase.com/v1/oauth/authorize',
-        //   tokenUrl: 'https://api.supabase.com/v1/oauth/token',
-        //   userInfoUrl: 'https://dummy-not-used.supabase.co',
-        //   scopes: ['database.read', 'database.write', 'projects.read'],
-        //   responseType: 'code',
-        //   pkce: true,
-        //   redirectURI: `${getBaseUrl()}/api/auth/oauth2/callback/supabase`,
-        //   getUserInfo: async (tokens) => {
-        //     try {
-        //       logger.info('Creating Supabase user profile from token data')
-
-        //       let userId = 'supabase-user'
-        //       if (tokens.idToken) {
-        //         try {
-        //           const decodedToken = JSON.parse(
-        //             Buffer.from(tokens.idToken.split('.')[1], 'base64').toString()
-        //           )
-        //           if (decodedToken.sub) {
-        //             userId = decodedToken.sub
-        //           }
-        //         } catch (e) {
-        //           logger.warn('Failed to decode Supabase ID token', {
-        //             error: e,
-        //           })
-        //         }
-        //       }
-
-        //       const uniqueId = `${userId}-${Date.now()}`
-        //       const now = new Date()
-
-        //       return {
-        //         id: uniqueId,
-        //         name: 'Supabase User',
-        //         email: `${uniqueId.replace(/[^a-zA-Z0-9]/g, '')}@supabase.user`,
-        //         emailVerified: false,
-        //         createdAt: now,
-        //         updatedAt: now,
-        //       }
-        //     } catch (error) {
-        //       logger.error('Error creating Supabase user profile:', { error })
-        //       return null
-        //     }
-        //   },
-        // },
 
         // X provider
         {
@@ -1132,57 +1144,6 @@ export const auth = betterAuth({
             }
           },
         },
-
-        // Discord provider (unused)
-        // {
-        //   providerId: 'discord',
-        //   clientId: env.DISCORD_CLIENT_ID as string,
-        //   clientSecret: env.DISCORD_CLIENT_SECRET as string,
-        //   authorizationUrl: 'https://discord.com/api/oauth2/authorize',
-        //   tokenUrl: 'https://discord.com/api/oauth2/token',
-        //   userInfoUrl: 'https://discord.com/api/users/@me',
-        //   scopes: ['identify', 'bot', 'messages.read', 'guilds', 'guilds.members.read'],
-        //   responseType: 'code',
-        //   accessType: 'offline',
-        //   authentication: 'basic',
-        //   prompt: 'consent',
-        //   redirectURI: `${getBaseUrl()}/api/auth/oauth2/callback/discord`,
-        //   getUserInfo: async (tokens) => {
-        //     try {
-        //       const response = await fetch('https://discord.com/api/users/@me', {
-        //         headers: {
-        //           Authorization: `Bearer ${tokens.accessToken}`,
-        //         },
-        //       })
-
-        //       if (!response.ok) {
-        //         logger.error('Error fetching Discord user info:', {
-        //           status: response.status,
-        //           statusText: response.statusText,
-        //         })
-        //         return null
-        //       }
-
-        //       const profile = await response.json()
-        //       const now = new Date()
-
-        //       return {
-        //         id: profile.id,
-        //         name: profile.username || 'Discord User',
-        //         email: profile.email || `${profile.id}@discord.user`,
-        //         image: profile.avatar
-        //           ? `https://cdn.discordapp.com/avatars/${profile.id}/${profile.avatar}.png`
-        //           : undefined,
-        //         emailVerified: profile.verified || false,
-        //         createdAt: now,
-        //         updatedAt: now,
-        //       }
-        //     } catch (error) {
-        //       logger.error('Error in Discord getUserInfo:', { error })
-        //       return null
-        //     }
-        //   },
-        // },
 
         // Jira provider
         {
@@ -1323,7 +1284,6 @@ export const auth = betterAuth({
           authorizationUrl: 'https://api.notion.com/v1/oauth/authorize',
           tokenUrl: 'https://api.notion.com/v1/oauth/token',
           userInfoUrl: 'https://api.notion.com/v1/users/me',
-          scopes: ['workspace.content', 'workspace.name', 'page.read', 'page.write'],
           responseType: 'code',
           pkce: false,
           accessType: 'offline',
@@ -1525,6 +1485,9 @@ export const auth = betterAuth({
           pkce: true,
           accessType: 'offline',
           prompt: 'consent',
+          authorizationUrlParams: {
+            token_access_type: 'offline',
+          },
           getUserInfo: async (tokens) => {
             try {
               const response = await fetch(
