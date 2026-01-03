@@ -60,6 +60,7 @@ export const env = createEnv({
     EMAIL_VERIFICATION_ENABLED:            z.boolean().optional(),                 // Enable email verification for user registration and login (defaults to false)
     RESEND_API_KEY:                        z.string().min(1).optional(),           // Resend API key for transactional emails
     FROM_EMAIL_ADDRESS:                    z.string().min(1).optional(),           // Complete from address (e.g., "Sim <noreply@domain.com>" or "noreply@domain.com")
+    PERSONAL_EMAIL_FROM:                   z.string().min(1).optional(),           // From address for personalized emails
     EMAIL_DOMAIN:                          z.string().min(1).optional(),           // Domain for sending emails (fallback when FROM_EMAIL_ADDRESS not set)
     AZURE_ACS_CONNECTION_STRING:           z.string().optional(),                  // Azure Communication Services connection string
 
@@ -138,6 +139,7 @@ export const env = createEnv({
     S3_CHAT_BUCKET_NAME:                   z.string().optional(),                  // S3 bucket for chat logos
     S3_COPILOT_BUCKET_NAME:                z.string().optional(),                  // S3 bucket for copilot files
     S3_PROFILE_PICTURES_BUCKET_NAME:       z.string().optional(),                  // S3 bucket for profile pictures
+    S3_OG_IMAGES_BUCKET_NAME:              z.string().optional(),                  // S3 bucket for OpenGraph images
 
     // Cloud Storage - Azure Blob 
     AZURE_ACCOUNT_NAME:                    z.string().optional(),                  // Azure storage account name
@@ -149,6 +151,7 @@ export const env = createEnv({
     AZURE_STORAGE_CHAT_CONTAINER_NAME:     z.string().optional(),                  // Azure container for chat logos
     AZURE_STORAGE_COPILOT_CONTAINER_NAME:  z.string().optional(),                  // Azure container for copilot files
     AZURE_STORAGE_PROFILE_PICTURES_CONTAINER_NAME: z.string().optional(),          // Azure container for profile pictures
+    AZURE_STORAGE_OG_IMAGES_CONTAINER_NAME: z.string().optional(),                 // Azure container for OpenGraph images
 
     // Data Retention
     FREE_PLAN_LOG_RETENTION_DAYS:          z.string().optional(),                  // Log retention days for free plan users

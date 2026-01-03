@@ -11,6 +11,7 @@ import { AsanaBlock } from '@/blocks/blocks/asana'
 import { BrowserUseBlock } from '@/blocks/blocks/browser_use'
 import { CalendlyBlock } from '@/blocks/blocks/calendly'
 import { ChatTriggerBlock } from '@/blocks/blocks/chat_trigger'
+import { CirclebackBlock } from '@/blocks/blocks/circleback'
 import { ClayBlock } from '@/blocks/blocks/clay'
 import { ConditionBlock } from '@/blocks/blocks/condition'
 import { ConfluenceBlock } from '@/blocks/blocks/confluence'
@@ -41,17 +42,21 @@ import { GoogleSheetsBlock } from '@/blocks/blocks/google_sheets'
 import { GoogleSlidesBlock } from '@/blocks/blocks/google_slides'
 import { GoogleVaultBlock } from '@/blocks/blocks/google_vault'
 import { GrafanaBlock } from '@/blocks/blocks/grafana'
+import { GrainBlock } from '@/blocks/blocks/grain'
+import { GreptileBlock } from '@/blocks/blocks/greptile'
 import { GuardrailsBlock } from '@/blocks/blocks/guardrails'
 import { HubSpotBlock } from '@/blocks/blocks/hubspot'
 import { HuggingFaceBlock } from '@/blocks/blocks/huggingface'
 import { HumanInTheLoopBlock } from '@/blocks/blocks/human_in_the_loop'
 import { HunterBlock } from '@/blocks/blocks/hunter'
 import { ImageGeneratorBlock } from '@/blocks/blocks/image_generator'
+import { ImapBlock } from '@/blocks/blocks/imap'
 import { IncidentioBlock } from '@/blocks/blocks/incidentio'
 import { InputTriggerBlock } from '@/blocks/blocks/input_trigger'
 import { IntercomBlock } from '@/blocks/blocks/intercom'
 import { JinaBlock } from '@/blocks/blocks/jina'
 import { JiraBlock } from '@/blocks/blocks/jira'
+import { JiraServiceManagementBlock } from '@/blocks/blocks/jira_service_management'
 import { KalshiBlock } from '@/blocks/blocks/kalshi'
 import { KnowledgeBlock } from '@/blocks/blocks/knowledge'
 import { LinearBlock } from '@/blocks/blocks/linear'
@@ -154,6 +159,7 @@ export const registry: Record<string, BlockConfig> = {
   browser_use: BrowserUseBlock,
   calendly: CalendlyBlock,
   chat_trigger: ChatTriggerBlock,
+  circleback: CirclebackBlock,
   clay: ClayBlock,
   condition: ConditionBlock,
   confluence: ConfluenceBlock,
@@ -173,7 +179,9 @@ export const registry: Record<string, BlockConfig> = {
   github: GitHubBlock,
   gitlab: GitLabBlock,
   gmail: GmailBlock,
+  grain: GrainBlock,
   grafana: GrafanaBlock,
+  greptile: GreptileBlock,
   guardrails: GuardrailsBlock,
   google_calendar: GoogleCalendarBlock,
   google_docs: GoogleDocsBlock,
@@ -189,11 +197,13 @@ export const registry: Record<string, BlockConfig> = {
   human_in_the_loop: HumanInTheLoopBlock,
   hunter: HunterBlock,
   image_generator: ImageGeneratorBlock,
+  imap: ImapBlock,
   incidentio: IncidentioBlock,
   input_trigger: InputTriggerBlock,
   intercom: IntercomBlock,
   jina: JinaBlock,
   jira: JiraBlock,
+  jira_service_management: JiraServiceManagementBlock,
   kalshi: KalshiBlock,
   knowledge: KnowledgeBlock,
   linear: LinearBlock,

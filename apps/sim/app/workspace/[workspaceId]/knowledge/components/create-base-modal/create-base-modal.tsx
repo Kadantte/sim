@@ -2,6 +2,8 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { zodResolver } from '@hookform/resolvers/zod'
+import { createLogger } from '@sim/logger'
+import { useQueryClient } from '@tanstack/react-query'
 import { Loader2, RotateCcw, X } from 'lucide-react'
 import { useParams } from 'next/navigation'
 import { useForm } from 'react-hook-form'
@@ -18,11 +20,10 @@ import {
   Textarea,
 } from '@/components/emcn'
 import { cn } from '@/lib/core/utils/cn'
-import { createLogger } from '@/lib/logs/console/logger'
 import { formatFileSize, validateKnowledgeBaseFile } from '@/lib/uploads/utils/file-utils'
 import { ACCEPT_ATTRIBUTE } from '@/lib/uploads/utils/validation'
 import { useKnowledgeUpload } from '@/app/workspace/[workspaceId]/knowledge/hooks/use-knowledge-upload'
-import type { KnowledgeBaseData } from '@/stores/knowledge/store'
+import { knowledgeKeys } from '@/hooks/queries/knowledge'
 
 const logger = createLogger('CreateBaseModal')
 
@@ -33,7 +34,6 @@ interface FileWithPreview extends File {
 interface CreateBaseModalProps {
   open: boolean
   onOpenChange: (open: boolean) => void
-  onKnowledgeBaseCreated?: (knowledgeBase: KnowledgeBaseData) => void
 }
 
 const FormSchema = z
@@ -44,23 +44,33 @@ const FormSchema = z
       .max(100, 'Name must be less than 100 characters')
       .refine((value) => value.trim().length > 0, 'Name cannot be empty'),
     description: z.string().max(500, 'Description must be less than 500 characters').optional(),
+    /** Minimum chunk size in characters */
     minChunkSize: z
       .number()
-      .min(1, 'Min chunk size must be at least 1')
-      .max(2000, 'Min chunk size must be less than 2000'),
+      .min(1, 'Min chunk size must be at least 1 character')
+      .max(2000, 'Min chunk size must be less than 2000 characters'),
+    /** Maximum chunk size in tokens (1 token ≈ 4 characters) */
     maxChunkSize: z
       .number()
-      .min(100, 'Max chunk size must be at least 100')
-      .max(4000, 'Max chunk size must be less than 4000'),
+      .min(100, 'Max chunk size must be at least 100 tokens')
+      .max(4000, 'Max chunk size must be less than 4000 tokens'),
+    /** Overlap between chunks in tokens */
     overlapSize: z
       .number()
-      .min(0, 'Overlap size must be non-negative')
-      .max(500, 'Overlap size must be less than 500'),
+      .min(0, 'Overlap must be non-negative')
+      .max(500, 'Overlap must be less than 500 tokens'),
   })
-  .refine((data) => data.minChunkSize < data.maxChunkSize, {
-    message: 'Min chunk size must be less than max chunk size',
-    path: ['minChunkSize'],
-  })
+  .refine(
+    (data) => {
+      // Convert maxChunkSize from tokens to characters for comparison (1 token ≈ 4 chars)
+      const maxChunkSizeInChars = data.maxChunkSize * 4
+      return data.minChunkSize < maxChunkSizeInChars
+    },
+    {
+      message: 'Min chunk size (characters) must be less than max chunk size (tokens × 4)',
+      path: ['minChunkSize'],
+    }
+  )
 
 type FormValues = z.infer<typeof FormSchema>
 
@@ -69,13 +79,10 @@ interface SubmitStatus {
   message: string
 }
 
-export function CreateBaseModal({
-  open,
-  onOpenChange,
-  onKnowledgeBaseCreated,
-}: CreateBaseModalProps) {
+export function CreateBaseModal({ open, onOpenChange }: CreateBaseModalProps) {
   const params = useParams()
   const workspaceId = params.workspaceId as string
+  const queryClient = useQueryClient()
 
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -90,9 +97,6 @@ export function CreateBaseModal({
 
   const { uploadFiles, isUploading, uploadProgress, uploadError, clearError } = useKnowledgeUpload({
     workspaceId,
-    onUploadComplete: (uploadedFiles) => {
-      logger.info(`Successfully uploaded ${uploadedFiles.length} files`)
-    },
   })
 
   const handleClose = (open: boolean) => {
@@ -123,7 +127,7 @@ export function CreateBaseModal({
     defaultValues: {
       name: '',
       description: '',
-      minChunkSize: 1,
+      minChunkSize: 100,
       maxChunkSize: 1024,
       overlapSize: 200,
     },
@@ -143,7 +147,7 @@ export function CreateBaseModal({
       reset({
         name: '',
         description: '',
-        minChunkSize: 1,
+        minChunkSize: 100,
         maxChunkSize: 1024,
         overlapSize: 200,
       })
@@ -290,13 +294,10 @@ export function CreateBaseModal({
           logger.info(`Successfully uploaded ${uploadedFiles.length} files`)
           logger.info(`Started processing ${uploadedFiles.length} documents in the background`)
 
-          newKnowledgeBase.docCount = uploadedFiles.length
-
-          if (onKnowledgeBaseCreated) {
-            onKnowledgeBaseCreated(newKnowledgeBase)
-          }
+          await queryClient.invalidateQueries({
+            queryKey: knowledgeKeys.list(workspaceId),
+          })
         } catch (uploadError) {
-          // If file upload fails completely, delete the knowledge base to avoid orphaned empty KB
           logger.error('File upload failed, deleting knowledge base:', uploadError)
           try {
             await fetch(`/api/knowledge/${newKnowledgeBase.id}`, {
@@ -309,9 +310,9 @@ export function CreateBaseModal({
           throw uploadError
         }
       } else {
-        if (onKnowledgeBaseCreated) {
-          onKnowledgeBaseCreated(newKnowledgeBase)
-        }
+        await queryClient.invalidateQueries({
+          queryKey: knowledgeKeys.list(workspaceId),
+        })
       }
 
       files.forEach((file) => URL.revokeObjectURL(file.preview))
@@ -339,12 +340,31 @@ export function CreateBaseModal({
             <div ref={scrollContainerRef} className='min-h-0 flex-1 overflow-y-auto'>
               <div className='space-y-[12px]'>
                 <div className='flex flex-col gap-[8px]'>
-                  <Label htmlFor='name'>Name</Label>
+                  <Label htmlFor='kb-name'>Name</Label>
+                  {/* Hidden decoy fields to prevent browser autofill */}
+                  <input
+                    type='text'
+                    name='fakeusernameremembered'
+                    autoComplete='username'
+                    style={{
+                      position: 'absolute',
+                      left: '-9999px',
+                      opacity: 0,
+                      pointerEvents: 'none',
+                    }}
+                    tabIndex={-1}
+                    readOnly
+                  />
                   <Input
-                    id='name'
+                    id='kb-name'
                     placeholder='Enter knowledge base name'
                     {...register('name')}
                     className={cn(errors.name && 'border-[var(--text-error)]')}
+                    autoComplete='off'
+                    autoCorrect='off'
+                    autoCapitalize='off'
+                    data-lpignore='true'
+                    data-form-type='other'
                   />
                 </div>
 
@@ -359,13 +379,13 @@ export function CreateBaseModal({
                   />
                 </div>
 
-                <div className='space-y-[12px] rounded-[6px] bg-[var(--surface-6)] px-[12px] py-[14px]'>
+                <div className='space-y-[12px] rounded-[6px] bg-[var(--surface-5)] px-[12px] py-[14px]'>
                   <div className='grid grid-cols-2 gap-[12px]'>
                     <div className='flex flex-col gap-[8px]'>
-                      <Label htmlFor='minChunkSize'>Min Chunk Size</Label>
+                      <Label htmlFor='minChunkSize'>Min Chunk Size (characters)</Label>
                       <Input
                         id='minChunkSize'
-                        placeholder='1'
+                        placeholder='100'
                         {...register('minChunkSize', { valueAsNumber: true })}
                         className={cn(errors.minChunkSize && 'border-[var(--text-error)]')}
                         autoComplete='off'
@@ -375,7 +395,7 @@ export function CreateBaseModal({
                     </div>
 
                     <div className='flex flex-col gap-[8px]'>
-                      <Label htmlFor='maxChunkSize'>Max Chunk Size</Label>
+                      <Label htmlFor='maxChunkSize'>Max Chunk Size (tokens)</Label>
                       <Input
                         id='maxChunkSize'
                         placeholder='1024'
@@ -389,7 +409,7 @@ export function CreateBaseModal({
                   </div>
 
                   <div className='flex flex-col gap-[8px]'>
-                    <Label htmlFor='overlapSize'>Overlap Size</Label>
+                    <Label htmlFor='overlapSize'>Overlap (tokens)</Label>
                     <Input
                       id='overlapSize'
                       placeholder='200'
@@ -400,6 +420,9 @@ export function CreateBaseModal({
                       name='overlap-size'
                     />
                   </div>
+                  <p className='text-[11px] text-[var(--text-muted)]'>
+                    1 token ≈ 4 characters. Max chunk size and overlap are in tokens.
+                  </p>
                 </div>
 
                 <div className='flex flex-col gap-[8px]'>
@@ -530,7 +553,7 @@ export function CreateBaseModal({
                   Cancel
                 </Button>
                 <Button
-                  variant='primary'
+                  variant='tertiary'
                   type='submit'
                   disabled={isSubmitting || !nameValue?.trim()}
                 >

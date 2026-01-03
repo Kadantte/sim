@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
+import { createLogger } from '@sim/logger'
 import { Loader2, RotateCcw, X } from 'lucide-react'
 import { useParams } from 'next/navigation'
 import {
@@ -13,7 +14,6 @@ import {
   ModalHeader,
 } from '@/components/emcn'
 import { cn } from '@/lib/core/utils/cn'
-import { createLogger } from '@/lib/logs/console/logger'
 import { formatFileSize, validateKnowledgeBaseFile } from '@/lib/uploads/utils/file-utils'
 import { ACCEPT_ATTRIBUTE } from '@/lib/uploads/utils/validation'
 import { useKnowledgeUpload } from '@/app/workspace/[workspaceId]/knowledge/hooks/use-knowledge-upload'
@@ -33,7 +33,6 @@ interface AddDocumentsModalProps {
     minSize: number
     overlap: number
   }
-  onUploadComplete?: () => void
 }
 
 export function AddDocumentsModal({
@@ -41,7 +40,6 @@ export function AddDocumentsModal({
   onOpenChange,
   knowledgeBaseId,
   chunkingConfig,
-  onUploadComplete,
 }: AddDocumentsModalProps) {
   const params = useParams()
   const workspaceId = params.workspaceId as string
@@ -54,11 +52,6 @@ export function AddDocumentsModal({
 
   const { isUploading, uploadProgress, uploadFiles, uploadError, clearError } = useKnowledgeUpload({
     workspaceId,
-    onUploadComplete: () => {
-      logger.info(`Successfully uploaded ${files.length} files`)
-      onUploadComplete?.()
-      handleClose()
-    },
   })
 
   useEffect(() => {
@@ -219,6 +212,8 @@ export function AddDocumentsModal({
         chunkOverlap: chunkingConfig?.overlap || 200,
         recipe: 'default',
       })
+      logger.info(`Successfully uploaded ${files.length} files`)
+      handleClose()
     } catch (error) {
       logger.error('Error uploading files:', error)
     }
@@ -352,7 +347,7 @@ export function AddDocumentsModal({
                 Cancel
               </Button>
               <Button
-                variant='primary'
+                variant='tertiary'
                 type='button'
                 onClick={handleUpload}
                 disabled={files.length === 0 || isUploading}

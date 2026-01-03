@@ -1,17 +1,49 @@
 import { NextResponse } from 'next/server'
 import type { McpApiResponse } from '@/lib/mcp/types'
+import { isMcpTool, MCP } from '@/executor/constants'
 
 /**
  * MCP-specific constants
  */
 export const MCP_CONSTANTS = {
   EXECUTION_TIMEOUT: 60000,
-  CACHE_TIMEOUT: 5 * 60 * 1000, // 5 minutes
+  CACHE_TIMEOUT: 5 * 60 * 1000,
   DEFAULT_RETRIES: 3,
   DEFAULT_CONNECTION_TIMEOUT: 30000,
   MAX_CACHE_SIZE: 1000,
   MAX_CONSECUTIVE_FAILURES: 3,
 } as const
+
+/**
+ * Core MCP tool parameter keys that are metadata, not user-entered test values.
+ * These should be preserved when cleaning up params during schema updates.
+ */
+export const MCP_TOOL_CORE_PARAMS = new Set(['serverId', 'serverUrl', 'toolName', 'serverName'])
+
+/**
+ * Sanitizes a string by removing invisible Unicode characters that cause HTTP header errors.
+ * Handles characters like U+2028 (Line Separator) that can be introduced via copy-paste.
+ */
+export function sanitizeForHttp(value: string): string {
+  return value
+    .replace(/[\u2028\u2029\u200B-\u200D\uFEFF]/g, '')
+    .replace(/[\x00-\x1F\x7F]/g, '')
+    .trim()
+}
+
+/**
+ * Sanitizes all header key-value pairs for HTTP usage.
+ */
+export function sanitizeHeaders(
+  headers: Record<string, string> | undefined
+): Record<string, string> | undefined {
+  if (!headers) return headers
+  return Object.fromEntries(
+    Object.entries(headers)
+      .map(([key, value]) => [sanitizeForHttp(key), sanitizeForHttp(value)])
+      .filter(([key, value]) => key !== '' && value !== '')
+  )
+}
 
 /**
  * Client-safe MCP constants
@@ -124,7 +156,7 @@ export function categorizeError(error: unknown): { message: string; status: numb
  * Create standardized MCP tool ID from server ID and tool name
  */
 export function createMcpToolId(serverId: string, toolName: string): string {
-  const normalizedServerId = serverId.startsWith('mcp-') ? serverId : `mcp-${serverId}`
+  const normalizedServerId = isMcpTool(serverId) ? serverId : `${MCP.TOOL_PREFIX}${serverId}`
   return `${normalizedServerId}-${toolName}`
 }
 

@@ -1,11 +1,11 @@
 import { db } from '@sim/db'
 import { webhook, workflow as workflowTable } from '@sim/db/schema'
+import { createLogger } from '@sim/logger'
 import { task } from '@trigger.dev/sdk'
 import { eq } from 'drizzle-orm'
 import { v4 as uuidv4 } from 'uuid'
 import { IdempotencyService, webhookIdempotency } from '@/lib/core/idempotency'
 import { processExecutionFiles } from '@/lib/execution/files'
-import { createLogger } from '@/lib/logs/console/logger'
 import { LoggingSession } from '@/lib/logs/execution/logging-session'
 import { buildTraceSpans } from '@/lib/logs/execution/trace-spans/trace-spans'
 import { WebhookAttachmentProcessor } from '@/lib/webhooks/attachment-processor'
@@ -17,7 +17,8 @@ import {
   loadWorkflowFromNormalizedTables,
 } from '@/lib/workflows/persistence/utils'
 import { getWorkflowById } from '@/lib/workflows/utils'
-import { type ExecutionMetadata, ExecutionSnapshot } from '@/executor/execution/snapshot'
+import { ExecutionSnapshot } from '@/executor/execution/snapshot'
+import type { ExecutionMetadata } from '@/executor/execution/types'
 import type { ExecutionResult } from '@/executor/types'
 import { Serializer } from '@/serializer'
 import { mergeSubblockState } from '@/stores/workflows/server-utils'
@@ -164,7 +165,10 @@ async function executeWebhookJobInternal(
       .from(workflowTable)
       .where(eq(workflowTable.id, payload.workflowId))
       .limit(1)
-    const workspaceId = wfRows[0]?.workspaceId || undefined
+    const workspaceId = wfRows[0]?.workspaceId
+    if (!workspaceId) {
+      throw new Error(`Workflow ${payload.workflowId} has no associated workspace`)
+    }
     const workflowVariables = (wfRows[0]?.variables as Record<string, any>) || {}
 
     // Merge subblock states (matching workflow-execution pattern)
@@ -265,14 +269,25 @@ async function executeWebhookJobInternal(
             logger.error(`[${requestId}] Missing snapshot seed for paused execution`, {
               executionId,
             })
+            await loggingSession.markAsFailed('Missing snapshot seed for paused execution')
           } else {
-            await PauseResumeManager.persistPauseResult({
-              workflowId: payload.workflowId,
-              executionId,
-              pausePoints: executionResult.pausePoints || [],
-              snapshotSeed: executionResult.snapshotSeed,
-              executorUserId: executionResult.metadata?.userId,
-            })
+            try {
+              await PauseResumeManager.persistPauseResult({
+                workflowId: payload.workflowId,
+                executionId,
+                pausePoints: executionResult.pausePoints || [],
+                snapshotSeed: executionResult.snapshotSeed,
+                executorUserId: executionResult.metadata?.userId,
+              })
+            } catch (pauseError) {
+              logger.error(`[${requestId}] Failed to persist pause result`, {
+                executionId,
+                error: pauseError instanceof Error ? pauseError.message : String(pauseError),
+              })
+              await loggingSession.markAsFailed(
+                `Failed to persist pause state: ${pauseError instanceof Error ? pauseError.message : String(pauseError)}`
+              )
+            }
           }
         } else {
           await PauseResumeManager.processQueuedResumes(executionId)
@@ -298,7 +313,7 @@ async function executeWebhookJobInternal(
       // Start logging session so the complete call has a log entry to update
       await loggingSession.safeStart({
         userId: payload.userId,
-        workspaceId: workspaceId || '',
+        workspaceId,
         variables: {},
         triggerData: {
           isTest: payload.testMode === true,
@@ -356,7 +371,7 @@ async function executeWebhookJobInternal(
       // Start logging session so the complete call has a log entry to update
       await loggingSession.safeStart({
         userId: payload.userId,
-        workspaceId: workspaceId || '',
+        workspaceId,
         variables: {},
         triggerData: {
           isTest: payload.testMode === true,
@@ -398,7 +413,7 @@ async function executeWebhookJobInternal(
           if (triggerConfig.outputs) {
             logger.debug(`[${requestId}] Processing trigger ${resolvedTriggerId} file outputs`)
             const processedInput = await processTriggerFileOutputs(input, triggerConfig.outputs, {
-              workspaceId: workspaceId || '',
+              workspaceId,
               workflowId: payload.workflowId,
               executionId,
               requestId,
@@ -431,7 +446,7 @@ async function executeWebhookJobInternal(
 
           if (fileFields.length > 0 && typeof input === 'object' && input !== null) {
             const executionContext = {
-              workspaceId: workspaceId || '',
+              workspaceId,
               workflowId: payload.workflowId,
               executionId,
             }
@@ -506,14 +521,25 @@ async function executeWebhookJobInternal(
         logger.error(`[${requestId}] Missing snapshot seed for paused execution`, {
           executionId,
         })
+        await loggingSession.markAsFailed('Missing snapshot seed for paused execution')
       } else {
-        await PauseResumeManager.persistPauseResult({
-          workflowId: payload.workflowId,
-          executionId,
-          pausePoints: executionResult.pausePoints || [],
-          snapshotSeed: executionResult.snapshotSeed,
-          executorUserId: executionResult.metadata?.userId,
-        })
+        try {
+          await PauseResumeManager.persistPauseResult({
+            workflowId: payload.workflowId,
+            executionId,
+            pausePoints: executionResult.pausePoints || [],
+            snapshotSeed: executionResult.snapshotSeed,
+            executorUserId: executionResult.metadata?.userId,
+          })
+        } catch (pauseError) {
+          logger.error(`[${requestId}] Failed to persist pause result`, {
+            executionId,
+            error: pauseError instanceof Error ? pauseError.message : String(pauseError),
+          })
+          await loggingSession.markAsFailed(
+            `Failed to persist pause state: ${pauseError instanceof Error ? pauseError.message : String(pauseError)}`
+          )
+        }
       }
     } else {
       await PauseResumeManager.processQueuedResumes(executionId)
@@ -533,27 +559,45 @@ async function executeWebhookJobInternal(
       executedAt: new Date().toISOString(),
       provider: payload.provider,
     }
-  } catch (error: any) {
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : String(error)
+    const errorStack = error instanceof Error ? error.stack : undefined
+
     logger.error(`[${requestId}] Webhook execution failed`, {
-      error: error.message,
-      stack: error.stack,
+      error: errorMessage,
+      stack: errorStack,
       workflowId: payload.workflowId,
       provider: payload.provider,
     })
 
     try {
+      const wfRow = await db
+        .select({ workspaceId: workflowTable.workspaceId })
+        .from(workflowTable)
+        .where(eq(workflowTable.id, payload.workflowId))
+        .limit(1)
+      const errorWorkspaceId = wfRow[0]?.workspaceId
+
+      if (!errorWorkspaceId) {
+        logger.warn(
+          `[${requestId}] Cannot log error: workflow ${payload.workflowId} has no workspace`
+        )
+        throw error
+      }
+
       await loggingSession.safeStart({
         userId: payload.userId,
-        workspaceId: '', // May not be available for early errors
+        workspaceId: errorWorkspaceId,
         variables: {},
         triggerData: {
           isTest: payload.testMode === true,
           executionTarget: payload.executionTarget || 'deployed',
         },
-        deploymentVersionId, // Pass if available (undefined for early errors)
+        deploymentVersionId,
       })
 
-      const executionResult = (error?.executionResult as ExecutionResult | undefined) || {
+      const errorWithResult = error as { executionResult?: ExecutionResult }
+      const executionResult = errorWithResult?.executionResult || {
         success: false,
         output: {},
         logs: [],
@@ -564,8 +608,8 @@ async function executeWebhookJobInternal(
         endedAt: new Date().toISOString(),
         totalDurationMs: 0,
         error: {
-          message: error.message || 'Webhook execution failed',
-          stackTrace: error.stack,
+          message: errorMessage || 'Webhook execution failed',
+          stackTrace: errorStack,
         },
         traceSpans,
       })
